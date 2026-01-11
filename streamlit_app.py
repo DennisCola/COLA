@@ -28,8 +28,7 @@ def load():
         r = requests.get(URL)
         with BytesIO(r.content) as f:
             return pd.read_excel(f,"Fixed"), pd.read_excel(f,"Shared"), pd.read_excel(f,"Daily")
-    except:
-        return None, None, None
+    except: return None, None, None
 
 db_f, db_s, db_d = load()
 st.title("🌍 AI小線控(算報價)")
@@ -46,15 +45,25 @@ if db_f is not None:
                 js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
                 st.session_state.df = pd.DataFrame(js).reindex(columns=CLS).fillna("X").astype(str)
                 st.session_state.fn = up.name
-            except Exception:
+            except:
                 st.session_state.df = pd.DataFrame([["" for _ in CLS]], columns=CLS)
 
         st.header("2. 核對表")
-        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key="v6")
+        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key="v7")
 
         if st.button("計算報價"):
             st.divider()
             try:
-                df = pd.DataFrame(edf)
-                tot_e = 0.0
-                for _, r in df.iterrows():
+                calc_df = pd.DataFrame(edf)
+                total_eur = 0.0
+                # 修正後的縮排區塊
+                for _, row in calc_df.iterrows():
+                    day_txt = f"{row['午餐']} {row['晚餐']} {row['有料門票']}"
+                    for _, db_row in db_f.iterrows():
+                        key = str(db_row['判斷文字'])
+                        if key and key in day_txt:
+                            total_eur += float(db_row['單價(EUR)'])
+                
+                sh_e = float(db_s.iloc[:, 1].sum()) if not db_s.empty else 0.0
+                day_v = pd.to_numeric(calc_df["天數"], errors='coerce').fillna(0)
+                mx_d = int(day_v.max()) if day_v.max() > 0 else
