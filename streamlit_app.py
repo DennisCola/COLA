@@ -6,7 +6,8 @@ from docx import Document
 import google.generativeai as genai
 import json
 
-st.set_page_config(page_title="線控 Word 辨識強化版", layout="wide")
+# --- 1. 頁面設定 ---
+st.set_page_config(page_title="線控 6 欄位辨識版", layout="wide")
 
 if "GEMINI_API_KEY" not in st.secrets:
     st.error("請設定 API Key"); st.stop()
@@ -14,10 +15,11 @@ if "GEMINI_API_KEY" not in st.secrets:
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-COLS = ["天數", "日期", "星期", "行程大點", "午餐", "晚餐", "有料門票", "旅館"]
+# 核心 6 欄位：保留天數作為座標
+COLS = ["天數", "行程大點", "午餐", "晚餐", "有料門票", "旅館"]
 
-st.title("📄 行程辨識強化版")
-st.caption("針對『讀不出內容』進行了指令優化，並加強了 Word 表格解析。")
+st.title("📄 行程內容提取 (6 欄位座標版)")
+st.caption("保留『天數』作為基準，專注抓取每日的核心成本項目。")
 
 up = st.file_uploader("上傳行程 Word (.docx)", type=["docx"])
 
@@ -25,54 +27,44 @@ if up:
     if 'df' not in st.session_state or st.session_state.get('fn') != up.name:
         try:
             doc = Document(up)
-            # 1. 深度提取文字（包含標題、段落、表格）
-            full_content = []
+            content = []
+            # 提取段落與表格文字
             for p in doc.paragraphs:
-                if p.text.strip(): full_content.append(p.text.strip())
+                if p.text.strip(): content.append(p.text.strip())
             for tbl in doc.tables:
                 for row in tbl.rows:
-                    row_txt = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                    if row_txt: full_content.append(" | ".join(row_txt))
+                    row_txt = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if row_txt: content.append(" | ".join(dict.fromkeys(row_txt)))
             
-            raw_text = "\n".join(full_content)
-            st.session_state.raw_debug = raw_text # 留存原始文字供檢查
+            raw_text = "\n".join(content)
+            st.session_state.raw_debug = raw_text 
             
-            st.info("🔄 AI 深度分析中，這份行程比較長，請稍等...")
+            st.info("🔄 AI 正在以『天數』為基準進行掃描...")
 
-            # 2. 強化指令：要求 AI 必須根據上下文推斷
-            prompt = f"""
-            你是一位專業的旅行社線控助理。請從下方的行程文字中，提取每日資訊並轉為 JSON 列表。
-            欄位：{','.join(COLS)}。
+            pm = f"""你是一名專業線控。請讀行程並轉換為每日 JSON 列表。
+            欄位必須精確包含：{','.join(COLS)}。
             
-            【提取指南】：
-            - 『行程大點』：該日停留的城市或景點。
-            - 『午餐/晚餐』：找尋有餐飲描述的地方（如：鱒魚餐、自理、中式餐）。
-            - 『有料門票』：找尋提及『入內』、『含門票』或括號內的景點。
-            - 『旅館』：找尋當晚住宿的飯店名稱或星等。
-            - 如果該欄位沒提到，請留空字串 ""。
+            【指令】：
+            1. 『天數』：請識別這是第幾天（如：1, 2, 3...）。
+            2. 『行程大點』：抓出該日的主要城市。
+            3. 『午餐/晚餐』：抓出餐飲內容，找不到就留空。
+            4. 『有料門票』：找尋『入內』、『含門票』關鍵字。
+            5. 『旅館』：抓出飯店名稱。
+            6. 若無資訊則留空字串 ""。
             
-            文字內容：
-            {raw_text[:4000]} 
-            """
+            內容：
+            {raw_text[:4000]}"""
             
-            res = model.generate_content(prompt)
+            res = model.generate_content(pm)
             js_txt = res.text.replace('```json', '').replace('```', '').strip()
             data = json.loads(js_txt)
             
+            # 強制轉換並對齊
             st.session_state.df = pd.DataFrame(data).reindex(columns=COLS).fillna("").astype(str)
             st.session_state.fn = up.name
-        except Exception as e:
-            st.error("辨識失敗，請檢查 Word 是否加密或格式異常。")
+        except Exception:
             st.session_state.df = pd.DataFrame([["" for _ in COLS]], columns=COLS)
 
-    # 3. 顯示表格
     if 'df' in st.session_state:
-        st.subheader("📍 辨識結果核對")
+        st.subheader("📍 核心內容核對")
         st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key=f"ed_{up.name}")
-
-    # 4. 偵錯模式 (如果您覺得還是空的，點開這個看看)
-    with st.expander("🔍 偵錯：看看程式讀到了什麼文字？"):
-        if 'raw_debug' in st.session_state:
-            st.text_area("Word 原始提取文字", st.session_state.raw_debug, height=300)
-        else:
-            st.write("尚未讀取檔案")
