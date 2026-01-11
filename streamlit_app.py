@@ -6,74 +6,105 @@ from docx import Document
 import google.generativeai as genai
 import json
 
+# --- 1. 初始化設定 ---
 st.set_page_config(page_title="AI小線控", layout="wide")
+
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("請在 Secrets 中設定 GEMINI_API_KEY")
+    st.stop()
+
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=xlsx"
 COLS = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
 
+# --- 2. 側邊欄參數 ---
 with st.sidebar:
-    st.header("⚡ 參數")
-    ex = st.number_input("匯率", value=35.0)
-    ab = st.number_input("機票", value=32000)
-    at = st.number_input("稅金", value=7500)
-    pt = st.number_input("利潤", value=8000)
+    st.header("⚡ 報價參數")
+    ex = st.number_input("歐元匯率", value=35.0)
+    ab = st.number_input("機票票價", value=32000)
+    at = st.number_input("機票稅金", value=7500)
+    pt = st.number_input("目標利潤", value=8000)
 
 @st.cache_data(ttl=300)
-def load():
+def load_db():
     try:
         r = requests.get(URL)
         with BytesIO(r.content) as f:
             return pd.read_excel(f,"Fixed"), pd.read_excel(f,"Shared"), pd.read_excel(f,"Daily")
     except: return None, None, None
 
-db_f, db_s, db_d = load()
+db_f, db_s, db_d = load_db()
 st.title("🌍 AI小線控(算報價)")
 
+# --- 3. 主流程 ---
 if db_f is not None:
     st.success("✅ 資料庫已連線")
-    up = st.file_uploader("1. 上傳行程", type=["docx"])
+    up = st.file_uploader("1. 上傳行程 Word (.docx)", type=["docx"])
     
     if up:
-        # 讀取並辨識 (只在檔案改變時運行)
-        if 'data' not in st.session_state or st.session_state.get('fn') != up.name:
+        # 當上傳新檔案時，清除舊有的編輯資料
+        if 'current_fn' not in st.session_state or st.session_state.current_fn != up.name:
+            st.session_state.current_fn = up.name
+            if 'df_data' in st.session_state:
+                del st.session_state.df_data
+        
+        # 若無資料，則執行 AI 辨識
+        if 'df_data' not in st.session_state:
             try:
                 doc = Document(up)
+                # 排除圖片，僅抓取文字段落
                 tx = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
-                prom = f"線控助理。讀行程回傳JSON列表(11欄位:{','.join(COLS)})。行程:{tx[:2500]}"
+                st.info("🔄 AI 正在分析行程內容...")
+                
+                prom = f"線控助理。讀行程回傳JSON列表(11欄位:{','.join(COLS)})。無內容填X。內容:{tx[:2800]}"
                 res = model.generate_content(prom)
                 js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
-                st.session_state.data = pd.DataFrame(js).reindex(columns=COLS).fillna("X").astype(str)
-                st.session_state.fn = up.name
-            except:
-                st.session_state.data = pd.DataFrame([["D1","X","1","錯誤","X","X","X","X","X","X","X"]], columns=COLS)
+                
+                # 強制轉換所有內容為字串，確保 data_editor 不會崩潰
+                new_df = pd.DataFrame(js).reindex(columns=COLS).fillna("X").astype(str)
+                st.session_state.df_data = new_df
+            except Exception as e:
+                st.warning("⚠️ 辨識失敗，已載入空白核對表。")
+                st.session_state.df_data = pd.DataFrame([["D1","X","1","請手動輸入","X","X","X","X","X","X","X"]], columns=COLS)
 
-        st.header("2. 線控核對表")
-        # 關鍵修正：使用 key 讓編輯器穩定，並直接處理資料
-        final_df = st.data_editor(st.session_state.data, use_container_width=True, num_rows="dynamic", key="editor_v1")
+        st.header("2. 線控核對表 (去蕪存菁結果)")
+        
+        # 使用穩定 key 並直接連動 session_state
+        edited_df = st.data_editor(
+            st.session_state.df_data, 
+            use_container_width=True, 
+            num_rows="dynamic",
+            key="cost_editor"
+        )
 
         if st.button("確認無誤，產出報價"):
             st.divider()
             tot_e = 0
-            for _, r in final_df.iterrows():
-                # 比對內容包含午餐、晚餐與門票
-                txt = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
+            # 遍歷表格，掃描 Fixed 資料庫比對單價
+            for _, r in edited_df.iterrows():
+                row_txt = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
                 for _, dr in db_f.iterrows():
-                    if str(dr['判斷文字']) in txt: tot_e += float(dr['單價(EUR)'])
+                    if str(dr['判斷文字']) in row_txt:
+                        tot_e += float(dr['單價(EUR)'])
             
+            # 均攤成本
             sh_e = db_s.iloc[:, 1].sum() if not db_s.empty else 0
-            try: mx_d = int(pd.to_numeric(final_df["天數"]).max())
-            except: mx_d = 10
             
+            # 天數判斷
+            try:
+                mx_d = int(pd.to_numeric(edited_df["天數"]).max())
+            except:
+                mx_d = 10
+            
+            # 天數計價雜支
             d_i = db_d[db_d.iloc[:, 0] == mx_d]
             d_t = (d_i.iloc[0, 1] + d_i.iloc[0, 2]) if not d_i.empty else 800
 
+            # 階梯計算
             res_l = []
             for p in [16, 21, 26, 31]:
                 sc = sh_e / (p-1) if p > 1 else 0
-                nt = (tot_e + sc) * ex + ab + at + d_t
-                pr = (nt + pt) * 1.05
-                res_l.append({"人數": f"{p-1}+1", "成本": f"{int(nt):,}", "建議售價": f"{int(pr):,}"})
-            st.table(pd.DataFrame(res_l))
-            st.balloons()
-else: st.error("❌ 載入失敗")
+                net = (tot_e + sc) * ex + ab + at + d_t
+                pr = (net + pt) * 1.05
+                res_l.append({"人數級距": f"{p-1}+1", "成本
