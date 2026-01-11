@@ -6,84 +6,66 @@ from docx import Document
 import google.generativeai as genai
 import json
 
-# --- 1. 頁面設定 ---
 st.set_page_config(page_title="AI小線控(算報價)", layout="wide")
 
-# 設定 Gemini AI
+# 1. 設定 AI
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Google Sheet 原始網址
+# 2. 資料庫網址
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=xlsx"
 
-# --- 2. 側邊欄 ---
+# 3. 側邊欄參數
 with st.sidebar:
     st.header("⚡ 今日即時參數")
-    exchange_rate = st.number_input("今日歐元匯率", value=35.0, step=0.1)
-    airfare_base = st.number_input("機票票價 (TWD)", value=32000)
-    airfare_tax = st.number_input("機票稅金 (TWD)", value=7500)
-    profit_target = st.number_input("當團目標利潤 (TWD)", value=8000)
+    exchange_rate = st.number_input("歐元匯率", value=35.0)
+    airfare_base = st.number_input("機票票價", value=32000)
+    airfare_tax = st.number_input("機票稅金", value=7500)
+    profit_target = st.number_input("目標利潤", value=8000)
 
-# --- 3. 讀取資料庫 ---
 @st.cache_data(ttl=300)
 def load_db():
     try:
         response = requests.get(SHEET_URL)
         with BytesIO(response.content) as f:
-            fixed_pax = pd.read_excel(f, sheet_name="Fixed")
-            shared_costs = pd.read_excel(f, sheet_name="Shared")
-            daily_costs = pd.read_excel(f, sheet_name="Daily")
-        return fixed_pax, shared_costs, daily_costs
-    except:
-        return None, None, None
+            f_fix = pd.read_excel(f, sheet_name="Fixed")
+            f_sha = pd.read_excel(f, sheet_name="Shared")
+            f_day = pd.read_excel(f, sheet_name="Daily")
+        return f_fix, f_sha, f_day
+    except: return None, None, None
 
-db_fixed, db_shared, db_daily = load_db()
+db_fix, db_sha, db_day = load_db()
 
 st.title("🌍 AI小線控(算報價)")
 
-if db_fixed is not None:
+if db_fix is not None:
     st.success("✅ 資料庫連動成功")
-    
-    st.header("1. 上傳行程 Word 檔")
-    uploaded_file = st.file_uploader("請選擇 .docx 行程檔案", type=["docx"])
+    uploaded_file = st.file_uploader("1. 上傳行程 Word 檔", type=["docx"])
 
     if uploaded_file:
         doc = Document(uploaded_file)
-        full_text = "\n".join([para.text for para in doc.paragraphs])
-        
-        st.info("🔄 AI 正在閱讀行程，並依照您的指定格式產出核對表...")
-        
-        prompt = f"""
-        你是一位專業的旅行社線控助理。請閱讀以下行程內容，將其「去蕪存菁」後填入表格。
-        請嚴格依照 JSON 格式回傳一個列表（List of Objects），包含以下 11 個欄位：
-        "日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"
-        
-        規則：
-        1. 如果行程沒提到某項內容，請填寫 "X"。
-        2. "天數"請填寫純數字。
-        3. 請只回傳純 JSON 列表，不要包含任何 Markdown 標籤或解釋。
-        
-        行程內容：
-        {full_text[:3000]}
-        """
-        
-        try:
-            response = model.generate_content(prompt)
-            clean_json = response.text.replace('```json', '').replace('```', '').strip()
-            detected_data = json.loads(clean_json)
-        except:
-            detected_data = [{
-                "日期": "X", "星期": "X", "天數": 1, "行程大點": "辨識失敗", 
-                "午餐": "X", "餐標": "X", "晚餐": "X", "餐標": "X", "有料門票": "X", "旅館": "X", "星等": "X"
-            }]
+        full_text = "\n".join([p.text for p in doc.paragraphs])
+        st.info("🔄 AI 正在生成核對表...")
 
-        st.header("2. 線控核對表 (去蕪存菁結果)")
-        st.caption("欄位已比照您的範例格式。請在此核對、修改或補充內容。")
-        
-        # 轉換為 DataFrame 並排序
-        df_editor = pd.DataFrame(detected_data)
-        columns_order = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
-        df_editor = df_editor.reindex(columns=columns_order)
-        
-        # 顯示可編輯表格
-        final_check_df = st.data_editor(df_editor
+        prompt = f"""
+        你是一位線控助理。請閱讀以下行程，回傳一個 JSON 列表，包含 11 個欄位：
+        "日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"
+        規則：若無內容請填 "X"。行程：{full_text[:3000]}
+        """
+        try:
+            res = model.generate_content(prompt)
+            data = json.loads(res.text.replace('```json', '').replace('```', '').strip())
+        except:
+            data = [{"日期": "X", "天數": 1, "行程大點": "辨識失敗"}]
+
+        st.header("2. 線控核對表")
+        cols = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
+        df_edit = pd.DataFrame(data).reindex(columns=cols)
+        final_df = st.data_editor(df_edit, use_container_width=True, num_rows="dynamic")
+
+        if st.button("確認無誤，產出報價"):
+            st.divider()
+            # 計算邏輯
+            total_eur = 0
+            for _, r in final_df.iterrows():
+                txt = f"{r
