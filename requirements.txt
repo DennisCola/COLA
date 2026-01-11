@@ -1,4 +1,6 @@
 streamlit
-st-gsheets-connection
 google-generativeai
 python-docx
+pandas
+requests
+openpyxl
