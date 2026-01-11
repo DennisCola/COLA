@@ -28,7 +28,8 @@ def load():
         r = requests.get(URL)
         with BytesIO(r.content) as f:
             return pd.read_excel(f,"Fixed"), pd.read_excel(f,"Shared"), pd.read_excel(f,"Daily")
-    except: return None, None, None
+    except:
+        return None, None, None
 
 db_f, db_s, db_d = load()
 st.title("🌍 AI小線控(算報價)")
@@ -45,10 +46,11 @@ if db_f is not None:
                 js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
                 st.session_state.df = pd.DataFrame(js).reindex(columns=CLS).fillna("X").astype(str)
                 st.session_state.fn = up.name
-            except: st.session_state.df = pd.DataFrame([["" for _ in CLS]], columns=CLS)
+            except Exception:
+                st.session_state.df = pd.DataFrame([["" for _ in CLS]], columns=CLS)
 
         st.header("2. 核對表")
-        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key="v5")
+        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key="v6")
 
         if st.button("計算報價"):
             st.divider()
@@ -56,23 +58,3 @@ if db_f is not None:
                 df = pd.DataFrame(edf)
                 tot_e = 0.0
                 for _, r in df.iterrows():
-                    txt = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
-                    for _, dr in db_f.iterrows():
-                        if str(dr['判斷文字']) and str(dr['判斷文字']) in txt: tot_e += float(dr['單價(EUR)'])
-                
-                sh_e = float(db_s.iloc[:, 1].sum()) if not db_s.empty else 0.0
-                day_v = pd.to_numeric(df["天數"], errors='coerce').fillna(0)
-                mx_d = int(day_v.max()) if day_v.max() > 0 else 10
-                d_i = db_d[db_d.iloc[:, 0] == mx_d]
-                d_twd = float(d_i.iloc[0, 1] + d_i.iloc[0, 2]) if not d_i.empty else 800.0
-
-                res = []
-                for p in [16, 21, 26, 31]:
-                    sc = sh_e / (p-1) if p > 1 else 0.0
-                    nt = (tot_e + sc) * ex + ab + at + d_twd
-                    pr = (nt + pt) * 1.05
-                    res.append({"人數": f"{p-1}+1", "成本": f"{int(nt):,}", "建議售價": f"{int(pr):,}"})
-                
-                st.table(pd.DataFrame(res))
-                st.success(f"辨識成本：{tot_e} EUR"); st.balloons()
-            except Exception as e:
