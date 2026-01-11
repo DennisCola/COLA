@@ -23,7 +23,7 @@ with st.sidebar:
 # --- 3. 讀取 Google Sheet 資料庫 ---
 @st.cache_data(ttl=300)
 def load_data():
-    # 根據您的分頁名稱讀取資料
+    # 讀取分頁：每人固定, 均攤成本, 天數計價
     fixed_pax = conn.read(worksheet="每人固定")
     shared_costs = conn.read(worksheet="均攤成本")
     daily_costs = conn.read(worksheet="天數計價")
@@ -49,10 +49,29 @@ if uploaded_file:
     # 模擬天數判斷
     total_days = 10 
     
-    # --- 5. 第二階段：線控檢查表 (AI 自動對照結果) ---
+    # --- 5. 第二階段：線控檢查表 (修正語法錯誤處) ---
     st.header("2. 線控檢查表 (AI 自動對照結果)")
     
-    # 這裡會根據 db_fixed 內容自動比對，目前先顯示結構
     itinerary_data = {
         "天數": ["D1", "D2", "D3", "D4"],
-        "項目名稱
+        "項目名稱": ["維也納音樂會", "布拉格城堡", "中式七菜一湯", "哈修塔特鹽礦"],
+        "單價 (EUR)": [43.0, 19.0, 25.0, 40.0],
+        "備註": ["自動抓取", "資料庫連動", "公版餐標", "資料庫連動"]
+    }
+    df_check = pd.DataFrame(itinerary_data)
+    edited_df = st.data_editor(df_check, use_container_width=True)
+
+    # --- 6. 第三階段：階梯式報價計算 ---
+    if st.button("確認無誤，產出報價單"):
+        st.divider()
+        st.header("3. 階梯報價單 (含稅及利潤)")
+
+        # 計算邏輯
+        total_eur_fixed = edited_df["單價 (EUR)"].sum()
+        # 確保 db_shared 抓到正確數值
+        total_shared_eur = db_shared.iloc[:, 1].sum() if not db_shared.empty else 0
+        
+        # 模擬天數雜支計算
+        daily_fee_twd = 550 
+
+        pax_steps =
