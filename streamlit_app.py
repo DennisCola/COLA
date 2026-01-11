@@ -37,13 +37,15 @@ st.title("🌍 AI小線控(算報價)")
 
 if db_f is not None:
     up = st.file_uploader("1. 上傳行程 Word (.docx)", type=["docx"])
+    
     if up:
+        # 當上傳新檔案或初次執行時
         if 'df' not in st.session_state or st.session_state.get('fn') != up.name:
             try:
                 doc = Document(up)
                 tx = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
-                st.info("🔄 AI 正在分析...")
-                pm = f"助理。讀行程回JSON列表({','.join(COLS)})。無資訊留空''。內容:{tx[:2500]}"
+                st.info("🔄 AI 正在分析行程內容...")
+                pm = f"助理。讀行程回JSON列表({','.join(COLS)})。無資訊留空''。內容:{tx[:2800]}"
                 res = model.generate_content(pm)
                 js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
                 st.session_state.df = pd.DataFrame(js).reindex(columns=COLS).fillna("").astype(str)
@@ -52,4 +54,30 @@ if db_f is not None:
                 st.session_state.df = pd.DataFrame([["" for _ in COLS]], columns=COLS)
 
         st.header("2. 線控核對表")
-        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key=f"ed_{st.session_state.fn}")
+        # 顯示編輯器，並給予固定 Key
+        edf = st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key="main_editor")
+
+        if st.button("確認無誤，產出報價"):
+            st.divider()
+            try:
+                # 確保 edf 是 DataFrame 格式以防 AttributeError
+                calc_df = pd.DataFrame(edf)
+                
+                tot_e = 0.0
+                for _, r in calc_df.iterrows():
+                    row_t = f"{str(r['午餐'])} {str(r['晚餐'])} {str(r['有料門票'])}"
+                    for _, dr in db_f.iterrows():
+                        key_word = str(dr['判斷文字'])
+                        if key_word and key_word in row_t:
+                            tot_e += float(dr['單價(EUR)'])
+                
+                sh_e = float(db_s.iloc[:, 1].sum()) if not db_s.empty else 0.0
+                day_v = pd.to_numeric(calc_df["天數"], errors='coerce').fillna(0)
+                mx_d = int(day_v.max()) if day_v.max() > 0 else 10
+                
+                d_info = db_d[db_d.iloc[:, 0] == mx_d]
+                d_twd = float(d_info.iloc[0, 1] + d_info.iloc[0, 2]) if not d_info.empty else 800.0
+
+                res_l = []
+                for p in [16, 21, 26, 31]:
+                    sc = sh_e / (p-
