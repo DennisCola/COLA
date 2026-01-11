@@ -61,7 +61,7 @@ if db_fixed is not None:
         規則：
         1. 如果行程沒提到某項內容，請填寫 "X"。
         2. "天數"請填寫純數字。
-        3. 請只回傳純 JSON，不要包含 Markdown 文字。
+        3. 請只回傳純 JSON 列表，不要包含任何 Markdown 標籤或解釋。
         
         行程內容：
         {full_text[:3000]}
@@ -71,14 +71,19 @@ if db_fixed is not None:
             response = model.generate_content(prompt)
             clean_json = response.text.replace('```json', '').replace('```', '').strip()
             detected_data = json.loads(clean_json)
-        except Exception as e:
-            # 修正後的錯誤備援資料
+        except:
             detected_data = [{
-                "日期": "X", "星期": "X", "天數": 1, "行程大點": "辨識失敗，請手動新增", 
+                "日期": "X", "星期": "X", "天數": 1, "行程大點": "辨識失敗", 
                 "午餐": "X", "餐標": "X", "晚餐": "X", "餐標": "X", "有料門票": "X", "旅館": "X", "星等": "X"
             }]
 
         st.header("2. 線控核對表 (去蕪存菁結果)")
         st.caption("欄位已比照您的範例格式。請在此核對、修改或補充內容。")
         
-        df_editor = pd.DataFrame(detected_
+        # 轉換為 DataFrame 並排序
+        df_editor = pd.DataFrame(detected_data)
+        columns_order = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
+        df_editor = df_editor.reindex(columns=columns_order)
+        
+        # 顯示可編輯表格
+        final_check_df = st.data_editor(df_editor
