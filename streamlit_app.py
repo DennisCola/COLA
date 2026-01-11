@@ -31,35 +31,38 @@ db_f, db_s, db_d = load()
 st.title("🌍 AI小線控(算報價)")
 
 if db_f is not None:
-    st.success("✅ 資料庫連線")
+    st.success("✅ 資料庫已連線")
     up = st.file_uploader("1. 上傳行程", type=["docx"])
+    
     if up:
-        if 'df_e' not in st.session_state or st.session_state.get('f_nm') != up.name:
+        # 讀取並辨識 (只在檔案改變時運行)
+        if 'data' not in st.session_state or st.session_state.get('fn') != up.name:
             try:
                 doc = Document(up)
                 tx = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
-                st.info("🔄 AI 辨識中...")
-                prom = f"助理。讀行程回傳JSON列表(含{','.join(COLS)})。無內容填X。內容:{tx[:2500]}"
+                prom = f"線控助理。讀行程回傳JSON列表(11欄位:{','.join(COLS)})。行程:{tx[:2500]}"
                 res = model.generate_content(prom)
                 js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
-                st.session_state.df_e = pd.DataFrame(js).reindex(columns=COLS).fillna("X").astype(str)
-                st.session_state.f_nm = up.name
+                st.session_state.data = pd.DataFrame(js).reindex(columns=COLS).fillna("X").astype(str)
+                st.session_state.fn = up.name
             except:
-                st.session_state.df_e = pd.DataFrame([["D1","X","1","錯誤","X","X","X","X","X","X","X"]], columns=COLS)
+                st.session_state.data = pd.DataFrame([["D1","X","1","錯誤","X","X","X","X","X","X","X"]], columns=COLS)
 
         st.header("2. 線控核對表")
-        final = st.data_editor(st.session_state.df_e, use_container_width=True, num_rows="dynamic")
+        # 關鍵修正：使用 key 讓編輯器穩定，並直接處理資料
+        final_df = st.data_editor(st.session_state.data, use_container_width=True, num_rows="dynamic", key="editor_v1")
 
-        if st.button("確認無誤，計算報價"):
+        if st.button("確認無誤，產出報價"):
             st.divider()
             tot_e = 0
-            for _, r in final.iterrows():
-                row_t = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
+            for _, r in final_df.iterrows():
+                # 比對內容包含午餐、晚餐與門票
+                txt = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
                 for _, dr in db_f.iterrows():
-                    if str(dr['判斷文字']) in row_t: tot_e += float(dr['單價(EUR)'])
+                    if str(dr['判斷文字']) in txt: tot_e += float(dr['單價(EUR)'])
             
             sh_e = db_s.iloc[:, 1].sum() if not db_s.empty else 0
-            try: mx_d = int(pd.to_numeric(final["天數"]).max())
+            try: mx_d = int(pd.to_numeric(final_df["天數"]).max())
             except: mx_d = 10
             
             d_i = db_d[db_d.iloc[:, 0] == mx_d]
@@ -67,7 +70,8 @@ if db_f is not None:
 
             res_l = []
             for p in [16, 21, 26, 31]:
-                nt = (tot_e + (sh_e/(p-1))) * ex + ab + at + d_t
+                sc = sh_e / (p-1) if p > 1 else 0
+                nt = (tot_e + sc) * ex + ab + at + d_t
                 pr = (nt + pt) * 1.05
                 res_l.append({"人數": f"{p-1}+1", "成本": f"{int(nt):,}", "建議售價": f"{int(pr):,}"})
             st.table(pd.DataFrame(res_l))
