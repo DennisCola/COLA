@@ -17,6 +17,9 @@ genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=xlsx"
 
+# 標準 11 欄位
+COLS = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
+
 # 2. 側邊欄
 with st.sidebar:
     st.header("⚡ 報價參數")
@@ -36,45 +39,57 @@ def load():
 db_f, db_s, db_d = load()
 st.title("🌍 AI小線控(算報價)")
 
-# 定義標準欄位
-COLS = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
-
 if db_f is not None:
     st.success("✅ 資料庫已連線")
     up = st.file_uploader("1. 上傳行程 Word (.docx)", type=["docx"])
     
     if up:
-        try:
-            tx = "\n".join([p.text for p in Document(up).paragraphs])
-            st.info("🔄 AI 正在去蕪存菁，請稍候...")
-            
-            prom = f"你是線控助理。請讀行程並回傳JSON格式列表，包含這11個鍵：{','.join(COLS)}。若無內容填X。行程內容：{tx[:2500]}"
-            res = model.generate_content(prom)
-            raw = res.text.replace('```json', '').replace('```', '').strip()
-            js_data = json.loads(raw)
-            
-            # 強制對齊欄位格式
-            df_e = pd.DataFrame(js_data).reindex(columns=COLS).fillna("X")
-        except:
-            st.warning("⚠️ AI 辨識遇到困難，已為您建立空白模板。")
-            df_e = pd.DataFrame([["D1","X",1,"請手動輸入","X","X","X","X","X","X","X"]], columns=COLS)
+        # 使用 Session State 確保表格資料在操作中不會遺失或因報錯閃退
+        if 'df_e' not in st.session_state:
+            try:
+                tx = "\n".join([p.text for p in Document(up).paragraphs])
+                st.info("🔄 AI 正在去蕪存菁，請稍候...")
+                
+                prom = f"你是線控助理。請讀行程並回傳JSON格式列表，包含：{','.join(COLS)}。若無內容填X。行程：{tx[:2500]}"
+                res = model.generate_content(prom)
+                raw = res.text.replace('```json', '').replace('```', '').strip()
+                js_data = json.loads(raw)
+                
+                # 強制轉換為 DataFrame 並填補缺失值
+                temp_df = pd.DataFrame(js_data)
+                # 確保 11 欄完整且內容全為字串（避免 API 類型錯誤）
+                temp_df = temp_df.reindex(columns=COLS).fillna("X").astype(str)
+                st.session_state.df_e = temp_df
+            except Exception as e:
+                st.warning("⚠️ AI 辨識異常，已改用空白模板。")
+                st.session_state.df_e = pd.DataFrame([["D1","X","1","請手動輸入","X","X","X","X","X","X","X"]], columns=COLS)
 
         st.header("2. 線控核對表 (請確認內容)")
-        final = st.data_editor(df_e, use_container_width=True, num_rows="dynamic")
+        
+        # 顯示可編輯表格
+        final = st.data_editor(
+            st.session_state.df_e, 
+            use_container_width=True, 
+            num_rows="dynamic",
+            key="main_editor"
+        )
 
         if st.button("確認無誤，計算報價"):
             st.divider()
             tot_e = 0
-            # 遍歷核對表，對照 Fixed 資料庫
+            # 遍歷核對表比對資料庫
             for _, r in final.iterrows():
                 row_t = f"{r['午餐']} {r['晚餐']} {r['有料門票']}"
                 for _, dr in db_f.iterrows():
                     if str(dr['判斷文字']) in row_t: 
-                        tot_e += dr['單價(EUR)']
+                        tot_e += float(dr['單價(EUR)'])
             
             sh_e = db_s.iloc[:, 1].sum() if not db_s.empty else 0
+            
+            # 處理天數（確保轉為整數）
             try:
-                mx_d = int(pd.to_numeric(final["天數"]).max())
+                days_list = pd.to_numeric(final["天數"], errors='coerce').fillna(0)
+                mx_d = int(days_list.max())
             except:
                 mx_d = 10
             
@@ -83,12 +98,17 @@ if db_f is not None:
 
             res_l = []
             for p in [16, 21, 26, 31]:
-                nt = (tot_e + (sh_e/(p-1))) * ex + ab + at + d_t
+                # 階梯計算邏輯
+                share_cost = sh_e / (p-1) if p > 1 else sh_e
+                nt = (tot_e + share_cost) * ex + ab + at + d_t
                 pr = (nt + pt) * 1.05
                 res_l.append({"人數": f"{p-1}+1", "成本": f"{int(nt):,}", "建議售價": f"{int(pr):,}"})
             
             st.subheader("3. 階梯報價單")
             st.table(pd.DataFrame(res_l))
             st.balloons()
+            
+            # 報價完清除 state，方便下次上傳
+            del st.session_state.df_e
 else:
-    st.error("❌ 資料庫載入失敗，請確認 Google Sheet 權限。")
+    st.error("❌ 資料庫載入失敗")
