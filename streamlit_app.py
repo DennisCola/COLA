@@ -6,8 +6,8 @@ from docx import Document
 import google.generativeai as genai
 import json
 
-# --- 1. 核心設定 ---
-st.set_page_config(page_title="AI小線控", layout="wide")
+# --- 基礎設定 ---
+st.set_page_config(page_title="AI行程轉表工具", layout="wide")
 
 if "GEMINI_API_KEY" not in st.secrets:
     st.error("請在 Secrets 中設定 GEMINI_API_KEY")
@@ -15,100 +15,71 @@ if "GEMINI_API_KEY" not in st.secrets:
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
-URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=xlsx"
+
+# 定義您要求的 11 個標準欄位
 COLS = ["日期", "星期", "天數", "行程大點", "午餐", "餐標", "晚餐", "餐標", "有料門票", "旅館", "星等"]
 
-# --- 2. 側邊欄參數 ---
-with st.sidebar:
-    st.header("⚡ 報價參數")
-    ex = st.number_input("歐元匯率", value=35.0)
-    ab = st.number_input("機票票價", value=32000)
-    at = st.number_input("機票稅金", value=7500)
-    pt = st.number_input("目標利潤", value=8000)
+st.title("📄 Word 行程自動轉表")
+st.caption("上傳 Word 檔，自動提取 11 欄位資訊。若 AI 無法辨識特定內容，將自動留白。")
 
-@st.cache_data(ttl=300)
-def load_db():
-    try:
-        r = requests.get(URL)
-        with BytesIO(r.content) as f:
-            return pd.read_excel(f,"Fixed"), pd.read_excel(f,"Shared"), pd.read_excel(f,"Daily")
-    except: return None, None, None
+up = st.file_uploader("上傳行程 Word (.docx)", type=["docx"])
 
-db_f, db_s, db_d = load_db()
-st.title("🌍 AI小線控(算報價)")
+if up:
+    # 檔案切換檢查
+    if 'fn' not in st.session_state or st.session_state.fn != up.name:
+        st.session_state.fn = up.name
+        if 'df' in st.session_state: del st.session_state.df
 
-# --- 3. 主流程 ---
-if db_f is not None:
-    st.success("✅ 資料庫已連線")
-    up = st.file_uploader("1. 上傳行程 Word (.docx)", type=["docx"])
-    
-    if up:
-        # 如果換了新檔案，清除舊的快取資料
-        if 'fn' not in st.session_state or st.session_state.fn != up.name:
-            st.session_state.fn = up.name
-            if 'raw_df' in st.session_state: del st.session_state.raw_df
+    if 'df' not in st.session_state:
+        try:
+            # 1. 提取 Word 文字（忽略圖片）
+            doc = Document(up)
+            paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            # 包含表格內的文字
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip(): paras.append(cell.text.strip())
+            
+            full_text = "\n".join(paras)
+            
+            st.info("🔄 AI 正在提取行程骨架，請稍候...")
 
-        # 執行 AI 辨識
-        if 'raw_df' not in st.session_state:
-            try:
-                doc = Document(up)
-                tx = "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
-                st.info("🔄 AI 正在分析行程內容...")
-                
-                prom = f"線控助理。讀行程回傳JSON列表(11欄位:{','.join(COLS)})。無內容填X。內容:{tx[:2800]}"
-                res = model.generate_content(prom)
-                js = json.loads(res.text.replace('```json', '').replace('```', '').strip())
-                
-                # 強制轉換為字串確保顯示穩定
-                st.session_state.raw_df = pd.DataFrame(js).reindex(columns=COLS).fillna("X").astype(str)
-            except:
-                st.session_state.raw_df = pd.DataFrame([["D1","X","1","解析失敗","X","X","X","X","X","X","X"]], columns=COLS)
+            # 2. 向 AI 發送指令：強調空白容錯
+            prompt = f"""
+            你是一名專業的旅遊業助理。請閱讀下方的 Word 行程內容，並將其轉換為 JSON 列表格式。
+            必須包含以下 11 個鍵：{', '.join(COLS)}。
+            
+            【重要規則】：
+            1. 如果行程中找不到某個欄位的資訊（例如沒寫餐標、沒寫門票），該欄位請直接留空字串 ""，不要寫 "無"、"X" 或任何解釋。
+            2. 確保產出的是純粹的 JSON 格式。
+            
+            行程內容：
+            {full_text[:3000]}
+            """
+            
+            res = model.generate_content(prompt)
+            # 清洗 AI 回傳的 Markdown 語法
+            clean_json = res.text.replace('```json', '').replace('```', '').strip()
+            data = json.loads(clean_json)
+            
+            # 3. 轉為 DataFrame 並確保格式對齊
+            df = pd.DataFrame(data).reindex(columns=COLS).fillna("").astype(str)
+            st.session_state.df = df
+            
+        except Exception as e:
+            st.error(f"辨識過程中發生錯誤，請確保檔案格式正確。")
+            st.session_state.df = pd.DataFrame([["" for _ in COLS]], columns=COLS)
 
-        st.header("2. 線控核對表 (去蕪存菁結果)")
-        
-        # 關鍵：這裡我們不再使用 session_state 作為 data_editor 的輸入源，而是用一個複製品
-        # 這樣可以徹底避免 StreamlitAPIException
-        final_df = st.data_editor(
-            st.session_state.raw_df, 
-            use_container_width=True, 
-            num_rows="dynamic",
-            key=f"editor_{st.session_state.fn}" # 使用動態 key 確保檔案切換時重置
-        )
+    # 4. 顯示結果表格
+    st.subheader("📍 線控核對表")
+    # 使用動態 Key 避免當機
+    edited_df = st.data_editor(
+        st.session_state.df,
+        use_container_width=True,
+        num_rows="dynamic",
+        key=f"editor_{st.session_state.fn}"
+    )
 
-        if st.button("確認無誤，產出報價"):
-            st.divider()
-            try:
-                # 計算歐元地接成本
-                tot_e = 0.0
-                for _, r in final_df.iterrows():
-                    day_txt = f"{str(r['午餐'])} {str(r['晚餐'])} {str(r['有料門票'])}"
-                    for _, dr in db_f.iterrows():
-                        if str(dr['判斷文字']) in day_txt:
-                            tot_e += float(dr['單價(EUR)'])
-                
-                # 計算均攤
-                sh_e = float(db_s.iloc[:, 1].sum()) if not db_s.empty else 0.0
-                
-                # 處理天數
-                days_col = pd.to_numeric(final_df["天數"], errors='coerce').fillna(0)
-                mx_d = int(days_col.max()) if days_col.max() > 0 else 10
-                
-                # 雜支
-                d_i = db_d[db_d.iloc[:, 0] == mx_d]
-                d_t = float(d_i.iloc[0, 1] + d_i.iloc[0, 2]) if not d_i.empty else 800.0
-
-                # 階梯計算
-                res_list = []
-                for p in [16, 21, 26, 31]:
-                    sc = sh_e / (p-1) if p > 1 else 0
-                    net = (tot_e + sc) * ex + ab + at + d_t
-                    pr = (net + pt) * 1.05
-                    res_list.append({"人數級距": f"{p-1}+1", "成本(TWD)": f"{int(net):,}", "建議售價(TWD)": f"{int(pr):,}"})
-                
-                st.subheader("3. 階梯報價單結果")
-                st.table(pd.DataFrame(res_list))
-                st.balloons()
-            except Exception as e:
-                st.error(f"計算錯誤：{e}")
-else:
-    st.error("❌ 無法載入資料庫")
+    # 提供下載功能
+    csv = edited_df.to_csv
