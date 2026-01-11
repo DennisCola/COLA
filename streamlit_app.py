@@ -7,90 +7,70 @@ import google.generativeai as genai
 import json
 import re
 
-# --- 1. 頁面設定 ---
-st.set_page_config(page_title="奧捷行程辨識引擎", layout="wide")
+st.set_page_config(page_title="線控專用-精準提取版", layout="wide")
 
 if "GEMINI_API_KEY" not in st.secrets:
-    st.error("請在 Secrets 設定 API Key"); st.stop()
+    st.error("請設定 API Key"); st.stop()
 
-# 修正模型名稱調用方式
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# 核心 6 欄位
 COLS = ["天數", "行程大點", "午餐", "晚餐", "有料門票", "旅館"]
 
-st.title("🌍 奧捷行程提取器 (強力解析版)")
-st.caption("已修正模型調用路徑，請重新嘗試上傳。")
+st.title("🛡️ 結構化行程提取 (穩定版)")
+st.caption("改用表格掃描與範例引導，大幅提升提取精準度。")
 
-up = st.file_uploader("1. 上傳您的行程 Word (.docx)", type=["docx"])
+up = st.file_uploader("1. 上傳 .docx 檔案", type=["docx"])
 
 if up:
     if 'df' not in st.session_state or st.session_state.get('fn') != up.name:
         try:
             doc = Document(up)
-            all_text = []
+            extracted_data = []
             
-            # 提取所有段落
-            for p in doc.paragraphs:
-                if p.text.strip(): all_text.append(p.text.strip())
-            
-            # 提取所有表格文字
+            # 第一階段：優先掃描 Word 內的表格內容（最精準）
             for tbl in doc.tables:
                 for row in tbl.rows:
-                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                    if cells: all_text.append(" | ".join(dict.fromkeys(cells)))
+                    row_txt = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if row_txt:
+                        extracted_data.append(" | ".join(dict.fromkeys(row_txt)))
             
-            raw_content = "\n".join(all_text)
-            st.session_state.raw_debug = raw_content 
+            # 第二階段：補足段落內容
+            for p in doc.paragraphs:
+                if p.text.strip(): extracted_data.append(p.text.strip())
             
-            st.info("🔄 AI 正在深度掃描文字內容...")
+            raw_text = "\n".join(extracted_data)
+            st.session_state.raw_debug = raw_text 
 
-            # 強力 Prompt 指令
+            # 強力引導 Prompt
             prompt = f"""
-            你是一位資深旅行社線控助理。請從下方的行程文字中，提取每日資訊並轉為 JSON 列表格式。
-            欄位必須精確包含：{','.join(COLS)}。
+            你是一位專業線控。請將行程文字轉換為 JSON。
+            範例輸入：『Day 3 薩爾斯堡。午餐：鱒魚餐、晚餐：六菜一湯。入內美泉宮。住：HILTON』
+            範例輸出：[{{"天數":"3","行程大點":"薩爾斯堡","午餐":"鱒魚餐","晚餐":"六菜一湯","有料門票":"美泉宮","旅館":"HILTON"}}]
             
-            【提取規範】：
-            - 『天數』：標註 Day 1, Day 2... 
-            - 『行程大點』：造訪城市或景點。
-            - 『午餐/晚餐』：抓出餐飲關鍵字（如：中式、自理、鱒魚餐）。
-            - 『有料門票』：找尋提及『入內』、『含門票』的項目。
-            - 『旅館』：抓出飯店名稱。
-            - 無資訊請填入 ""。
+            目標格式：{json.dumps(COLS, ensure_ascii=False)}
             
-            文字內容：
-            {raw_content[:4000]}
+            行程內容：
+            {raw_text[:4500]}
             """
             
-            # 呼叫 AI
-            response = model.generate_content(prompt)
-            
-            # 使用正則表達式精準提取 JSON 區塊，防止 AI 回傳多餘文字
-            match = re.search(r'\[\s*\{.*\}\s*\]', response.text, re.DOTALL)
+            res = model.generate_content(prompt)
+            # 濾除 AI 廢話，只抓 JSON 括號內容
+            match = re.search(r'\[.*\]', res.text, re.DOTALL)
             if match:
-                js_txt = match.group(0)
-                data = json.loads(js_txt)
+                data = json.loads(match.group(0))
                 st.session_state.df = pd.DataFrame(data).reindex(columns=COLS).fillna("").astype(str)
                 st.session_state.fn = up.name
             else:
-                st.error("AI 回傳格式不正確，請再試一次。")
-                
+                st.error("AI 無法解析結構，請確認 Word 是否有文字內容。")
+
         except Exception as e:
-            st.error(f"解析發生錯誤：{e}")
-            st.session_state.df = pd.DataFrame([["" for _ in COLS]], columns=COLS)
+            st.error(f"提取失敗: {e}")
 
-    # 顯示表格
     if 'df' in st.session_state:
-        st.subheader("📍 核心內容核對")
-        st.data_editor(
-            st.session_state.df, 
-            use_container_width=True, 
-            num_rows="dynamic", 
-            key=f"ed_{up.name}"
-        )
+        st.subheader("📍 提取結果核對")
+        st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key=f"ed_{up.name}")
 
-    # 偵錯工具
-    with st.expander("🔍 看看程式從 Word 裡讀到了什麼文字？"):
+    with st.expander("🔍 查看底層提取文字 (如果沒抓到，請確認此處是否有字)"):
         if 'raw_debug' in st.session_state:
-            st.text_area("讀取到的文字內容：", st.session_state.raw_debug, height=300)
+            st.text_area("提取文本：", st.session_state.raw_debug, height=300)
