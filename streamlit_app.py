@@ -1,10 +1,13 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import requests
+from io import BytesIO
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="AI小線控(算報價)", layout="wide")
-conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Google Sheet 的原始網址
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=xlsx"
 
 # --- 2. 側邊欄 ---
 with st.sidebar:
@@ -14,25 +17,34 @@ with st.sidebar:
     airfare_tax = st.number_input("機票稅金 (TWD)", value=7500)
     profit_target = st.number_input("當團目標利潤 (TWD)", value=8000)
 
-# --- 3. 讀取資料庫 (已改為英文分頁) ---
+# --- 3. 讀取資料庫 (使用 Excel 導出模式，極度穩定) ---
 @st.cache_data(ttl=300)
-def load_data():
-    # 注意：這裡的分頁名稱必須與 Google Sheet 一致
-    fixed_pax = conn.read(worksheet="Fixed")
-    shared_costs = conn.read(worksheet="Shared")
-    daily_costs = conn.read(worksheet="Daily")
-    return fixed_pax, shared_costs, daily_costs
+def load_data_v2():
+    try:
+        # 直接下載整個 Excel 檔案
+        response = requests.get(SHEET_URL)
+        with BytesIO(response.content) as f:
+            # 分別讀取不同分頁
+            fixed_pax = pd.read_excel(f, sheet_name="Fixed")
+            shared_costs = pd.read_excel(f, sheet_name="Shared")
+            daily_costs = pd.read_excel(f, sheet_name="Daily")
+        return fixed_pax, shared_costs, daily_costs
+    except Exception as e:
+        st.error(f"資料讀取失敗，原因：{e}")
+        return None, None, None
 
 st.title("🌍 AI小線控(算報價)")
 
-try:
-    db_fixed, db_shared, db_daily = load_data()
-    st.caption("✅ 已成功連動 Google Sheets 資料庫")
-except Exception as e:
-    st.error(f"連動失敗，請檢查 Secrets 或分頁名稱：{e}")
-    st.stop()
+db_fixed, db_shared, db_daily = load_data_v2()
 
-# --- 4. 簡易顯示測試 ---
-st.info("資料庫讀取成功！請開始進行報價作業。")
-if st.checkbox("查看門票資料庫 (Fixed)"):
-    st.write(db_fixed)
+if db_fixed is not None:
+    st.success("✅ 已成功連動 Google Sheets 資料庫")
+    st.info("資料庫讀取成功！請開始進行報價作業。")
+    
+    # 這裡顯示資料庫內容讓你確認
+    if st.checkbox("查看門票資料庫 (Fixed)"):
+        st.write(db_fixed)
+else:
+    st.error("❌ 還是連不上。請檢查 Google Sheet 是否設為「知道連結的人均可檢視」。")
+
+# --- 後續報價邏輯保持不變 ---
