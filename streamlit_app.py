@@ -1,76 +1,80 @@
 import streamlit as st
 import pandas as pd
-import requests
-from io import BytesIO
-from docx import Document
 import google.generativeai as genai
 import json
 import re
 
-st.set_page_config(page_title="線控專用-精準提取版", layout="wide")
+# --- 1. 頁面基礎設定 ---
+st.set_page_config(page_title="奧捷行程 AI 提取器", layout="wide")
 
 if "GEMINI_API_KEY" not in st.secrets:
-    st.error("請設定 API Key"); st.stop()
+    st.error("請在 Secrets 設定 API Key"); st.stop()
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+# 核心 6 欄位
 COLS = ["天數", "行程大點", "午餐", "晚餐", "有料門票", "旅館"]
 
-st.title("🛡️ 結構化行程提取 (穩定版)")
-st.caption("改用表格掃描與範例引導，大幅提升提取精準度。")
+st.title("🌍 奧捷行程 AI 提取器 (文字貼上版)")
+st.info("💡 操作說明：請全選 Word 內容 (Ctrl+A)，複製 (Ctrl+C)，然後貼在下方框格內。")
 
-up = st.file_uploader("1. 上傳 .docx 檔案", type=["docx"])
+# --- 2. 文字輸入區 ---
+# 使用 st.text_area 接收純文字輸入
+raw_input = st.text_area("👉 請在此貼上行程內容：", height=450, placeholder="貼上後點擊下方按鈕...")
 
-if up:
-    if 'df' not in st.session_state or st.session_state.get('fn') != up.name:
+if st.button("🚀 開始辨識並分類"):
+    if not raw_input.strip():
+        st.warning("請輸入內容後再辨識！")
+    else:
         try:
-            doc = Document(up)
-            extracted_data = []
-            
-            # 第一階段：優先掃描 Word 內的表格內容（最精準）
-            for tbl in doc.tables:
-                for row in tbl.rows:
-                    row_txt = [c.text.strip() for c in row.cells if c.text.strip()]
-                    if row_txt:
-                        extracted_data.append(" | ".join(dict.fromkeys(row_txt)))
-            
-            # 第二階段：補足段落內容
-            for p in doc.paragraphs:
-                if p.text.strip(): extracted_data.append(p.text.strip())
-            
-            raw_text = "\n".join(extracted_data)
-            st.session_state.raw_debug = raw_text 
+            st.info("🔄 AI 正在分析文字結構，請稍候...")
 
-            # 強力引導 Prompt
+            # 強化指令：要求精準分類
             prompt = f"""
-            你是一位專業線控。請將行程文字轉換為 JSON。
-            範例輸入：『Day 3 薩爾斯堡。午餐：鱒魚餐、晚餐：六菜一湯。入內美泉宮。住：HILTON』
-            範例輸出：[{{"天數":"3","行程大點":"薩爾斯堡","午餐":"鱒魚餐","晚餐":"六菜一湯","有料門票":"美泉宮","旅館":"HILTON"}}]
+            你是一位專業的旅遊線控。請將以下行程文字重新分類，並轉換為 JSON 列表格式。
+            欄位名稱必須精確為：{','.join(COLS)}。
             
-            目標格式：{json.dumps(COLS, ensure_ascii=False)}
+            【分類準則】：
+            1. 『天數』：標註 Day 1, Day 2 等。
+            2. 『行程大點』：抓出該日的主要造訪城市。
+            3. 『午餐/晚餐』：抓出餐食名稱，若為自理請註明。
+            4. 『有料門票』：抓出行程中明確提到入內、包含門票的項目。
+            5. 『旅館』：抓出飯店名稱與星等。
+            6. 若文中未提到該科目，請直接填入 "" (空字串)。
             
-            行程內容：
-            {raw_text[:4500]}
+            文字內容：
+            {raw_input[:5000]}
             """
             
-            res = model.generate_content(prompt)
-            # 濾除 AI 廢話，只抓 JSON 括號內容
-            match = re.search(r'\[.*\]', res.text, re.DOTALL)
+            # 調用 AI
+            response = model.generate_content(prompt)
+            
+            # 使用正則表達式提取 JSON 區塊
+            match = re.search(r'\[\s*\{.*\}\s*\]', response.text, re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
-                st.session_state.df = pd.DataFrame(data).reindex(columns=COLS).fillna("").astype(str)
-                st.session_state.fn = up.name
+                # 建立 DataFrame 並存入 session_state
+                st.session_state.itinerary_df = pd.DataFrame(data).reindex(columns=COLS).fillna("").astype(str)
+                st.success("✅ 分類完成！")
             else:
-                st.error("AI 無法解析結構，請確認 Word 是否有文字內容。")
-
+                st.error("AI 無法理解此段內容的結構，請嘗試分段貼上或檢查內容。")
+                
         except Exception as e:
-            st.error(f"提取失敗: {e}")
+            st.error(f"辨識發生錯誤：{e}")
 
-    if 'df' in st.session_state:
-        st.subheader("📍 提取結果核對")
-        st.data_editor(st.session_state.df, use_container_width=True, num_rows="dynamic", key=f"ed_{up.name}")
-
-    with st.expander("🔍 查看底層提取文字 (如果沒抓到，請確認此處是否有字)"):
-        if 'raw_debug' in st.session_state:
-            st.text_area("提取文本：", st.session_state.raw_debug, height=300)
+# --- 3. 顯示分類結果表格 ---
+if 'itinerary_df' in st.session_state:
+    st.divider()
+    st.subheader("📍 AI 分類結果核對表")
+    st.caption("您可以直接在表格中點擊修改。確認無誤後，這就是您的成本基礎。")
+    
+    # 讓使用者可以編輯辨識出的結果
+    edited_df = st.data_editor(
+        st.session_state.itinerary_df, 
+        use_container_width=True, 
+        num_rows="dynamic",
+        key="main_table_editor"
+    )
+    
+    # 未來可以在這裡加入「計算總價」的按鈕
