@@ -2,29 +2,26 @@ import streamlit as st
 import pandas as pd
 import re
 
-st.set_page_config(page_title="線控核價 0112B-5", layout="wide")
+st.set_page_config(page_title="線控核價 0112B-Final", layout="wide")
 
-# --- 0. 資料庫連動 (GID 確認) ---
+# --- 0. 資料庫連動 ---
 BASE_URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/gviz/tq?tqx=out:csv"
 GID_TICKET = "242124917"  # Ticket 門票
 GID_MENU = "474017029"    # Menu 餐食
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def fetch_db():
     db = {}
     try:
         df_m = pd.read_csv(f"{BASE_URL}&gid={GID_MENU}")
-        if '項目名稱' in df_m.columns:
-            for _, row in df_m.dropna(subset=['項目名稱', '單價']).iterrows():
-                db[str(row['項目名稱']).strip()] = float(row['單價'])
+        for _, row in df_m.dropna(subset=['項目名稱', '單價']).iterrows():
+            db[str(row['項目名稱']).strip()] = float(row['單價'])
         df_t = pd.read_csv(f"{BASE_URL}&gid={GID_TICKET}")
-        if '項目名稱' in df_t.columns:
-            for _, row in df_t.dropna(subset=['項目名稱', '單價']).iterrows():
-                name = str(row['項目名稱']).strip()
-                kw = str(row['判斷文字']).strip() if '判斷文字' in df_t.columns and pd.notna(row['判斷文字']) else name
-                db[kw] = float(row['單價'])
-    except:
-        pass
+        for _, row in df_t.dropna(subset=['項目名稱', '單價']).iterrows():
+            name = str(row['項目名稱']).strip()
+            kw = str(row['判斷文字']).strip() if '判斷文字' in df_t.columns and pd.notna(row['判斷文字']) else name
+            db[kw] = float(row['單價'])
+    except: pass
     return db
 
 # --- 1. Session 初始化 ---
@@ -33,39 +30,41 @@ if 'stage' not in st.session_state:
 if 'itinerary_df' not in st.session_state:
     st.session_state.itinerary_df = None
 
-st.title("🛡️ 線控報價系統 (0112B-5)")
+st.title("🛡️ 線控報價系統 (0112B-Final)")
 
 # ==========================================
-# 步驟 1: 匯入轉換
+# 步驟 1: 匯入 (寬鬆解析模式)
 # ==========================================
 if st.session_state.stage == 1:
-    st.subheader("步驟 1：匯入 AI Studio 文字")
-    raw_input = st.text_area("請貼上文字內容：", height=200)
+    st.subheader("步驟 1：貼上行程文字")
+    raw_input = st.text_area("請在此貼上內容：", height=250, placeholder="支援 AI Studio 表格或純文字...")
     
-    if st.button("🚀 轉換並拆分門票"):
+    if st.button("🚀 轉換並生成 10 行表格"):
         if raw_input:
             lines = [l.strip() for l in raw_input.split('\n') if l.strip()]
             all_rows = []
             
             for line in lines:
-                if re.match(r'^[|\s:-]+$', line):
-                    continue
+                if re.match(r'^[|\s:-]+$', line): continue
                 
-                # 分隔符解析
+                # 寬鬆切分：只要有內容就切
                 parts = [p.strip() for p in (line.split('|') if '|' in line else re.split(r'\t| {2,}', line)) if p.strip()]
                 
-                if len(parts) >= 6:
+                if len(parts) >= 1: # 只要有天數就處理
+                    # 補足 6 欄位防報錯
+                    while len(parts) < 6: parts.append("-")
+                    
                     day, point, lunch, dinner, ticket, hotel = parts[:6]
-                    # 門票拆分
+                    
+                    # 門票拆分 (支援 + 、)
                     tks = re.split(r'\+|、', ticket)
                     tks = [t.strip() for t in tks if t.strip()]
-                    if not tks:
-                        tks = ["-"]
+                    if not tks: tks = ["-"]
                     
                     # 寫入主列
                     all_rows.append([day, point, lunch, True, dinner, True, tks[0], True, hotel, True])
                     
-                    # 寫入副列
+                    # 寫入副列 (其餘格子視覺合併)
                     if len(tks) > 1:
                         for extra in tks[1:]:
                             all_rows.append(["〃", "〃", "", False, "", False, extra, True, "", False])
@@ -76,5 +75,21 @@ if st.session_state.stage == 1:
                 st.rerun()
 
 # ==========================================
-# 步驟 2: 勾選決策
+# 步驟 2: 勾選
 # ==========================================
+elif st.session_state.stage == 2:
+    st.subheader("步驟 2：勾選計費項目")
+    st.session_state.itinerary_df = st.data_editor(st.session_state.itinerary_df, use_container_width=True, key="editor_s2")
+    
+    if st.button("🪄 進行估價 (連動資料庫)"):
+        db = fetch_db()
+        final_list = []
+        
+        def match_p(content, is_chk, database):
+            if not is_chk or not content or content in ["〃", "-", ""]: return None
+            for k, p in database.items():
+                if k in str(content): return p
+            return 0.0
+
+        for _, row in st.session_state.itinerary_df.iterrows():
+            final
