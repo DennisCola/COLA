@@ -5,114 +5,60 @@ import re
 
 st.set_page_config(page_title="線控 10 格專業報價台", layout="wide")
 
-# --- 1. 連動 Google Sheet 單價資料庫 ---
-# 這裡使用你的資料庫連結
-DB_URL = "https://docs.google.com/spreadsheets/d/1y53LHsJkDx2xA1MsLzkdd5FYQYWcfQrhs2KeSbsKbZk/export?format=csv&gid=242124917"
-
-@st.cache_data
-def get_cost_db():
-    try:
-        # 這裡建議在 Google Sheet 建立一個「單價表」分頁
-        # 目前先用一個字典模擬，未來會直接讀取該分頁
-        db = {
-            "六菜一湯": 18.0,
-            "米其林": 75.0,
-            "肋排": 25.0,
-            "美泉宮": 22.0,
-            "霍夫堡": 18.0,
-            "聖維特": 15.0,
-            "自理": 0.0
-        }
-        return db
-    except:
-        return {}
-
-COST_DB = get_cost_db()
-
-# --- 2. 核心功能：單價比對邏輯 ---
-def match_price(item_name):
-    if not item_name or str(item_name).strip() == "":
+# --- 1. 模擬單價搜尋 (未來對接 Google Sheet) ---
+def find_price(item_name):
+    if not item_name or str(item_name).strip() == "" or "自理" in str(item_name):
         return 0.0
-    for key, price in COST_DB.items():
+    # 這裡可以加入更多關鍵字比對
+    db = {"六菜一湯": 18.0, "米其林": 75.0, "肋排": 25.0, "美泉宮": 22.0, "霍夫堡": 18.0}
+    for key, price in db.items():
         if key in str(item_name):
             return price
-    return -1.0  # 代表「找不到」，之後用來觸發提醒
+    return 0.0 # 找不到預設 0.0，讓線控手動填
 
-# --- 3. 網頁介面 ---
-st.title("🛡️ 專業線控：10 格全功能報價台")
-st.caption("流程：AI 6 格輸入 ⮕ 系統展開 10 格 ⮕ 手動校正單價 ⮕ 最終成本產出")
+# --- 2. 介面與標題 ---
+st.title("🛡️ 專業線控：黃金 10 格報價台")
+st.write("步驟：AI Studio 產出 6 格 ⮕ 貼入下方 ⮕ 系統擴充為 10 格並自動核價")
 
-# 第一步：接收 AI Studio 的 6 格資料
-raw_input = st.text_area("1. 請貼上 AI Studio 產出的 6 格內容：", height=150, placeholder="天數 | 行程大點 | 午餐 | 晚餐 | 門票 | 旅館")
+# --- 3. 資料輸入與解析 ---
+raw_input = st.text_area("請貼上 AI Studio 的 6 格表格內容：", height=150)
 
 if raw_input:
-    # 模糊辨識解析 Markdown
-    lines = [l.strip() for l in raw_input.strip().split('\n') if not re.match(r'^[|\s:-]+$', l.strip())]
-    if len(lines) > 1:
-        data = [[c.strip() for c in l.split('|') if c.strip() != ""] for l in lines]
-        base_df = pd.DataFrame(data[1:], columns=data[0])
-        
-        # 第二步：展開為 10 格結構
-        df = base_df.copy()
-        
-        # 定義需要對應價格的四個類別
-        price_cols = {
-            "午餐": "午餐價格",
-            "晚餐": "晚餐價格",
-            "門票": "門票單價",
-            "旅館": "旅館單價"
-        }
-        
-        for name, price_col in price_cols.items():
-            if name in df.columns:
-                # 建立包含開關 (預設 True)
-                df[f"{name}_包含"] = True
-                # 自動比對價格
-                df[price_col] = df[name].apply(match_price)
-        
-        # 重新排列為你理想的「黃金 10 格」+ 包含開關
-        # 排列順序：天數 | 大點 | 午餐 | 算? | 午餐價格 | 晚餐 | 算? | 晚餐價格 | ...
-        final_cols = ["天數", "行程大點"]
-        for name, price_col in price_cols.items():
-            final_cols.extend([name, f"{name}_包含", price_col])
-        
-        df = df.reindex(columns=final_cols).fillna(0)
-
-        st.success("✅ 已自動展開 10 格。請注意『-1.0』代表資料庫無此價格，請手動補上。")
-
-        # 第三步：手動編輯區
-        edited_df = st.data_editor(
-            df,
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "午餐_包含": st.column_config.CheckboxColumn("算?"),
-                "晚餐_包含": st.column_config.CheckboxColumn("算?"),
-                "門票_包含": st.column_config.CheckboxColumn("算?"),
-                "旅館_包含": st.column_config.CheckboxColumn("算?"),
-                "午餐價格": st.column_config.NumberColumn("EUR", help="若為 -1 請手動輸入"),
-                "晚餐價格": st.column_config.NumberColumn("EUR"),
-                "門票單價": st.column_config.NumberColumn("EUR"),
-                "旅館單價": st.column_config.NumberColumn("EUR"),
-            }
-        )
-
-        # 第四步：計算總成本
-        st.divider()
-        total_eur = 0
-        for name, price_col in price_cols.items():
-            inc_col = f"{name}_包含"
-            # 只計算打勾且價格 > 0 的部分
-            total_eur += edited_df[edited_df[inc_col] == True][price_col].apply(lambda x: max(0, float(x))).sum()
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            ex_rate = st.number_input("歐元匯率", value=35.5)
-            airfare = st.number_input("機票成本 (TWD)", value=45000)
-        with c2:
-            st.metric("地接總成本 (EUR)", f"€ {total_eur:,.1f}")
-        with c3:
-            total_cost_twd = (total_eur * ex_rate) + airfare
-            st.metric("目前總成本 (TWD)", f"NT$ {int(total_cost_twd):,}")
+    try:
+        # 強力解析 Markdown 文字
+        lines = [l.strip() for l in raw_input.strip().split('\n') if not re.match(r'^[|\s:-]+$', l.strip())]
+        if len(lines) > 1:
+            rows = [[c.strip() for c in l.split('|') if c.strip() != ""] for l in lines]
+            df = pd.DataFrame(rows[1:], columns=rows[0])
             
-        st.info("💡 接下來您可以拼上：分包商報價、稅金，完成最終成本表。")
+            # 清理欄位名，避免空格導致抓不到
+            df.columns = [c.strip() for c in df.columns]
+            
+            # --- 強制轉型為「黃金 10 格」結構 ---
+            # 1.天數 2.行程大點 3.午餐 4.午餐包含 5.午餐價格 6.晚餐 7.晚餐包含 8.晚餐價格 9.門票 10.門票單價 11.旅館 12.旅館單價
+            # (雖然是12格，但符合你說的 10 格核心資訊)
+            
+            cats = ["午餐", "晚餐", "門票", "旅館"]
+            for c in cats:
+                if c in df.columns:
+                    df[f"{c}包含"] = True
+                    # 只有單價欄位是空的或是原本沒有才去抓
+                    price_col = "門票單價" if c == "門票" else "旅館單價" if c == "旅館" else f"{c}價格"
+                    df[price_col] = df[c].apply(find_price)
+
+            # 重新排列欄位順序
+            final_order = ["天數", "行程大點"]
+            for c in cats:
+                p_col = "門票單價" if c == "門票" else "旅館單價" if c == "旅館" else f"{c}價格"
+                final_order.extend([c, f"{c}包含", p_col])
+            
+            df = df.reindex(columns=final_order).fillna(0)
+
+            # --- 4. 專業數據編輯器 ---
+            st.subheader("📍 行程與成本明細 (可直接修改內容或金額)")
+            
+            # 設定欄位顯示樣式
+            config = {f"{c}包含": st.column_config.CheckboxColumn("算?") for c in cats}
+            for c in cats:
+                p_col = "門票單價" if c == "門票" else "旅館單價" if c == "旅館" else f"{c}價格"
+                config[p_col] = st.column_config.NumberColumn("EUR", format="
