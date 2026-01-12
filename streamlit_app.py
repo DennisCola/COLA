@@ -1,74 +1,36 @@
 import streamlit as st
 import pandas as pd
-import requests
-from docx import Document
-import json
-import re
 
-st.set_page_config(page_title="線控終極工作台", layout="wide")
+st.set_page_config(page_title="線控報價儀表板", layout="wide")
 
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("請在 Secrets 設定 GEMINI_API_KEY"); st.stop()
+st.title("📊 線控報價與監控儀表板")
+st.write("---")
 
-API_KEY = st.secrets["GEMINI_API_KEY"]
+# 這裡讓使用者輸入 Google Sheet 的公開連結
+sheet_url = st.text_input("請貼上您的 Google Sheet 共用連結 (需開啟知道連結的人可檢視)：")
 
-# 這次我們把所有可能的「模型名稱」與「版本」排列組合
-MODELS = [
-    "gemini-1.5-flash", 
-    "gemini-1.5-flash-latest",
-    "gemini-1.0-pro",
-    "gemini-pro"
-]
-VERSIONS = ["v1", "v1beta"]
-
-COLS = ["天數", "行程大點", "午餐", "晚餐", "有料門票", "旅館"]
-
-st.title("🛡️ 線控行程分類器 (終極連線測試)")
-
-up = st.file_uploader("1. 上傳 Word 行程表 (.docx)", type=["docx"])
-
-if up:
+if sheet_url:
     try:
-        with st.spinner("正在逐一測試您的 API Key 支援哪種模型..."):
-            doc = Document(up)
-            content = ["\n".join([p.text for p in doc.paragraphs if p.text.strip()])]
-            full_text = "\n".join(content)
+        # 將連結轉為 csv 下載路徑
+        csv_url = sheet_url.replace('/edit?usp=sharing', '/export?format=csv').replace('/edit#gid=', '/export?format=csv&gid=')
+        df = pd.read_csv(csv_url)
+        
+        st.subheader("📍 行程脫水資料 (從 Google Sheet 同步)")
+        # 顯示你從 AI Studio 貼過去的資料
+        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+        
+        st.write("---")
+        st.subheader("💰 報價試算區")
+        col1, col2 = st.columns(2)
+        with col1:
+            exchange_rate = st.number_input("今日歐元匯率", value=35.5)
+        with col2:
+            profit = st.number_input("預期利潤 (%)", value=15)
             
-            prompt = f"將行程『脫水』，產出 JSON 列表。格式：{json.dumps(COLS, ensure_ascii=False)}。內容：{full_text[:3000]}"
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            
-            success = False
-            last_error = ""
-
-            # 開始地毯式搜索
-            for ver in VERSIONS:
-                for mdl in MODELS:
-                    url = f"https://generativelanguage.googleapis.com/{ver}/models/{mdl}:generateContent?key={API_KEY}"
-                    try:
-                        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=5)
-                        if res.status_code == 200:
-                            data = res.json()
-                            txt = data['candidates'][0]['content']['parts'][0]['text']
-                            match = re.search(r'\[.*\]', txt, re.DOTALL)
-                            if match:
-                                st.session_state.raw_df = pd.DataFrame(json.loads(match.group(0))).reindex(columns=COLS).fillna("").astype(str)
-                                success = True
-                                st.success(f"🎉 連線成功！您的 Key 支援路徑: {ver}/models/{mdl}")
-                                break
-                        else:
-                            last_error = f"{ver}/{mdl} -> {res.status_code}: {res.text}"
-                    except:
-                        continue
-                if success: break
-            
-            if not success:
-                st.error("❌ 所有已知模型路徑皆宣告失敗。")
-                st.write("最後一個錯誤訊息：")
-                st.code(last_error)
-                
+        st.info("💡 系統已自動對應 Google Sheet 中的各項成本...")
+        # 這裡之後可以寫計算公式
+        
     except Exception as e:
-        st.error(f"系統錯誤：{e}")
-
-if 'raw_df' in st.session_state:
-    st.subheader("📍 脫水結果表格")
-    st.data_editor(st.session_state.raw_df, use_container_width=True, num_rows="dynamic")
+        st.error(f"讀取試算表失敗，請確認連結權限：{e}")
+else:
+    st.info("👋 請將 AI Studio 產出的表格貼到 Google Sheet 後，把連結貼到上方。")
